@@ -6,6 +6,10 @@
 #include <float.h>
 #include "route_planner.h"
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 #define MAX_NODES 10000
 #define MAX_EDGES 50000
 #define MAX_STATES 100000 //time window states
@@ -176,6 +180,13 @@ void graph_init(Graph* g) {
     for (int i = 0; i < MAX_NODES; i++) {
         g->adj_list[i] = NULL;
         g->node_ids[i] = -1;
+        // initialize nodes
+        g->nodes[i].id = -1;
+        g->nodes[i].lat = 0.0;
+        g->nodes[i].lon = 0.0;
+        g->nodes[i].earliest = 0.0;
+        g->nodes[i].latest = DBL_MAX;
+        g->nodes[i].has_time_window = 0;
     }
 }
 
@@ -250,13 +261,10 @@ void dijkstra(Graph* g, int start_idx, int end_idx, double* dist, int* prev, int
             double v_arrival = u_arrival + edge->weight;
             
             //check if arrival time satisfies v's time window
-            if (!satsfies_time_window(g, v, v_arrival)) {
+            if (!satisfies_time_window(g, v, v_arrival)) {
                 edge = edge->next;
                 continue;
             }
-
-            //calc new distance
-            double new_dist = dist[u] + edge->weight;
 
             //update if better path
             if (v_arrival < dist[v]) {
@@ -282,7 +290,7 @@ void astar(Graph* g, int start_idx, int end_idx, double* dist, int* prev, int* n
     dist[start_idx] = 0;
     double h = haversine(g->nodes[start_idx].lat, g->nodes[start_idx].lon,
                         g->nodes[end_idx].lat, g->nodes[end_idx].lon);
-    pq_push(&pq, start_idx, h);
+    pq_push(&pq, start_idx, h, h);
     *nodes_explored = 0;
     
     while (!pq_empty(&pq)) {
@@ -302,7 +310,7 @@ void astar(Graph* g, int start_idx, int end_idx, double* dist, int* prev, int* n
                 prev[v] = u;
                 double h = haversine(g->nodes[v].lat, g->nodes[v].lon,
                                     g->nodes[end_idx].lat, g->nodes[end_idx].lon);
-                pq_push(&pq, v, alt + h);
+                pq_push(&pq, v, alt + h, alt + h);
             }
             edge = edge->next;
         }
@@ -311,6 +319,9 @@ void astar(Graph* g, int start_idx, int end_idx, double* dist, int* prev, int* n
 
 // Bellman-Ford algorithm
 int bellman_ford(Graph* g, int start_idx, int end_idx, double* dist, int* prev, int* nodes_explored) {
+    //stop warnings since not focusing on this algorithm
+    (void)end_idx;
+
     for (int i = 0; i < g->node_count; i++) {
         dist[i] = DBL_MAX;
         prev[i] = -1;
