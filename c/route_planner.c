@@ -8,16 +8,23 @@
 
 #define MAX_NODES 10000
 #define MAX_EDGES 50000
+#define MAX_STATES 100000 //time window states
 #define EARTH_RADIUS 6371.0
 
 // Node structure
+// location
 typedef struct {
     int id;
     double lat;
     double lon;
+    //track time constrains by location
+    double earliest;
+    double latest;
+    int has_time_window;
 } Node;
 
 // Edge structure
+// path/road from and to location
 typedef struct Edge {
     int to;
     double weight;
@@ -25,6 +32,7 @@ typedef struct Edge {
 } Edge;
 
 // Graph structure
+// full map of location/roads
 typedef struct {
     Node nodes[MAX_NODES];
     Edge* adj_list[MAX_NODES];
@@ -32,9 +40,16 @@ typedef struct {
     int node_ids[MAX_NODES];
 } Graph;
 
+//state structure for Dijkastra's time-windows
+typedef struct {
+    int node_idx;
+    double arrival_time;
+} State;
+
 // Priority queue node for Dijkstra and A*
 typedef struct {
     int node;
+    double arrival_time;
     double priority;
 } PQNode;
 
@@ -43,6 +58,12 @@ typedef struct {
     PQNode heap[MAX_NODES];
     int size;
 } PriorityQueue;
+
+//struct to track visited states
+typedef struct {
+    State states[MAX_STATES];
+    int count;
+} VisitedStates;
 
 // Helper function to calculate haversine distance
 double haversine(double lat1, double lon1, double lat2, double lon2) {
@@ -62,9 +83,10 @@ void pq_init(PriorityQueue* pq) {
     pq->size = 0;
 }
 
-void pq_push(PriorityQueue* pq, int node, double priority) {
+void pq_push(PriorityQueue* pq, int node, double arrival_time, double priority) {
     int i = pq->size++;
     pq->heap[i].node = node;
+    pq->heap[i].arrival_time = arrival_time;
     pq->heap[i].priority = priority;
     
     // Bubble up
@@ -109,6 +131,45 @@ int pq_empty(PriorityQueue* pq) {
     return pq->size == 0;
 }
 
+//check if state has been visited with = or < arrival time (more optimally visited)
+int is_dominated(VisitedStates* visited, int node_idx, double arrival_time) {
+    for (int i = 0; i < visited->count; i++) {
+        if (visited->states[i].node_idx == node_idx) {
+            if (visited->states[i].arrival_time <= arrival_time) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+//add the visited state to visited list
+void add_visited_state(VisitedStates* visited, int node_idx, double arrival_time) {
+    if (visited->count >= MAX_STATES) {
+        fprintf(stderr, "Visited states overflow\n");
+    }
+    visited->states[visited->count].node_idx = node_idx;
+    visited->states[visited->count].arrival_time = arrival_time;
+    visited->count++;
+}
+
+//verify arrival time satisfies time window
+int satisfies_time_window(Graph* g, int node_idx, double arrival_time) {
+    Node* node = &g->nodes[node_idx];
+
+    //no time window set, always satisfies
+    if (!node->has_time_window) {
+        return 1;
+    }
+
+    //arrival time earlier than earliest or later than latest, doesnt satisfy
+    if (arrival_time < node->earliest || arrival_time > node->latest) {
+        return 0;
+    }
+
+    return 1;
+}
+
 // Graph functions
 void graph_init(Graph* g) {
     g->node_count = 0;
@@ -134,37 +195,74 @@ void add_edge(Graph* g, int from, int to, double weight) {
 }
 
 // Dijkstra's algorithm
+
+//track arrival time
+//check time window at each node
+//state only better if it ALSO satisfies new constraints now
 void dijkstra(Graph* g, int start_idx, int end_idx, double* dist, int* prev, int* nodes_explored) {
     PriorityQueue pq;
     pq_init(&pq);
+
+    VisitedStates visited;
+    visited.count = 0;
     
+    //init distances
     for (int i = 0; i < g->node_count; i++) {
         dist[i] = DBL_MAX;
         prev[i] = -1;
     }
     
     dist[start_idx] = 0;
-    pq_push(&pq, start_idx, 0);
+    double start_arrival = 0.0;
+
+    //check if starting node satisfies its time window
+    if (!satisfies_time_window(g, start_idx, start_arrival)) {
+        printf("Start node time window not satisfied\n");
+        *nodes_explored = 0;
+        return;
+    }
+
+    pq_push(&pq, start_idx, start_arrival, 0.0);
     *nodes_explored = 0;
     
     while (!pq_empty(&pq)) {
         PQNode current = pq_pop(&pq);
         int u = current.node;
+        double u_arrival = current.arrival_time;
         (*nodes_explored)++;
         
+        // reached end node
         if (u == end_idx) break;
         
-        if (current.priority > dist[u]) continue;
+        // skip if previous state is more optimal than current state
+        if (is_dominated(&visited, u, u_arrival)) {
+            continue;
+        }
+
+        //mark state as visited
+        add_visited_state(&visited, u, u_arrival);
         
+        //explore neighboring locations
         Edge* edge = g->adj_list[u];
         while (edge != NULL) {
             int v = edge->to;
-            double alt = dist[u] + edge->weight;
+            //edge weight is just travel time
+            double v_arrival = u_arrival + edge->weight;
             
-            if (alt < dist[v]) {
-                dist[v] = alt;
+            //check if arrival time satisfies v's time window
+            if (!satsfies_time_window(g, v, v_arrival)) {
+                edge = edge->next;
+                continue;
+            }
+
+            //calc new distance
+            double new_dist = dist[u] + edge->weight;
+
+            //update if better path
+            if (v_arrival < dist[v]) {
+                dist[v] = v_arrival;
                 prev[v] = u;
-                pq_push(&pq, v, alt);
+                pq_push(&pq, v, v_arrival, v_arrival);
             }
             edge = edge->next;
         }
